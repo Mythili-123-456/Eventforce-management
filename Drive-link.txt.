@@ -1,0 +1,175 @@
+1. VenueStatusHelper.cls
+public with sharing class VenueStatusHelper {
+    public static void updateVenueStatus(List<Event__c> events) {
+        List<Venue__c> venues = new List<Venue__c>();
+
+        for (Event__c ev : events) {
+            if (ev.Venue__c != null) {
+
+                if (ev.Event_Status__c == 'Confirmed') {
+                    venues.add(
+                        new Venue__c(
+                            Id = ev.Venue__c,
+                            Availability_Status__c = 'Reserved'
+                        )
+                    );
+                }
+                else if (ev.Event_Status__c == 'Canceled') {
+                    venues.add(
+                        new Venue__c(
+                            Id = ev.Venue__c,
+                            Availability_Status__c = 'Available'
+                        )
+                    );
+                }
+            }
+        }
+
+        if (!venues.isEmpty()) {
+            update venues;
+        }
+    }
+}
+
+This class changes the Venue status to Reserved when an event is confirmed and Available when it is cancelled.
+
+2. EventTrigger13.trigger
+trigger EventTrigger13 on Event__c (after insert, after update) {
+
+    VenueStatusHelper.updateVenueStatus(Trigger.new);
+
+}
+
+This trigger calls VenueStatusHelper whenever an Event is created or updated.
+
+3. PreventDoubleBooking.trigger
+trigger PreventDoubleBooking on Event__c (before insert, before update) {
+
+    Set<Id> venueIds = new Set<Id>();
+
+    for (Event__c ev : Trigger.new) {
+        if (ev.Venue__c != null) {
+            venueIds.add(ev.Venue__c);
+        }
+    }
+
+    Map<Id, List<Event__c>> venueEventMap =
+        new Map<Id, List<Event__c>>();
+
+    for (Event__c e : [
+        SELECT Id, Venue__c, Event_Date__c
+        FROM Event__c
+        WHERE Venue__c IN :venueIds
+    ]) {
+
+        if (!venueEventMap.containsKey(e.Venue__c)) {
+            venueEventMap.put(
+                e.Venue__c,
+                new List<Event__c>()
+            );
+        }
+
+        venueEventMap.get(e.Venue__c).add(e);
+    }
+
+    for (Event__c ev : Trigger.new) {
+
+        if (
+            ev.Venue__c != null &&
+            venueEventMap.containsKey(ev.Venue__c)
+        ) {
+
+            for (
+                Event__c existing :
+                venueEventMap.get(ev.Venue__c)
+            ) {
+
+                if (
+                    existing.Event_Date__c == ev.Event_Date__c &&
+                    existing.Id != ev.Id
+                ) {
+
+                    ev.addError(
+                        'This Venue is already booked on this date.'
+                    );
+                }
+            }
+        }
+    }
+}
+
+This prevents two Events from using the same Venue on the same date.
+
+4. BatchCompleteEvents.cls
+global class BatchCompleteEvents
+    implements Database.Batchable<sObject> {
+
+    global Database.QueryLocator start(
+        Database.BatchableContext bc
+    ) {
+        return Database.getQueryLocator(
+            'SELECT Id, Event_Date__c, Event_Status__c ' +
+            'FROM Event__c ' +
+            'WHERE Event_Date__c < TODAY ' +
+            'AND Event_Status__c != \'Completed\''
+        );
+    }
+
+    global void execute(
+        Database.BatchableContext bc,
+        List<Event__c> scope
+    ) {
+
+        for (Event__c ev : scope) {
+            ev.Event_Status__c = 'Completed';
+        }
+
+        update scope;
+    }
+
+    global void finish(Database.BatchableContext bc) {
+        System.debug('Past events marked as Completed');
+    }
+}
+
+This Batch Apex finds past events and changes their status to Completed.
+
+5. ScheduleCompleteEvents.cls
+global class ScheduleCompleteEvents
+    implements Schedulable {
+
+    global void execute(SchedulableContext sc) {
+
+        Database.executeBatch(
+            new BatchCompleteEvents(),
+            200
+        );
+
+    }
+}
+
+This scheduled class runs the BatchCompleteEvents batch automatically.
+
+Your project Apex structure
+EventForce Management System
+│
+├── Event__c
+│
+├── Venue__c
+│
+├── Client__c
+│
+├── Vendor__c
+│
+├── Feedback__c
+│
+├── EventVendor__c
+│
+├── Apex Classes
+│   ├── VenueStatusHelper
+│   ├── BatchCompleteEvents
+│   └── ScheduleCompleteEvents
+│
+└── Apex Triggers
+    ├── EventTrigger13
+    └── PreventDoubleBooking
